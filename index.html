@@ -629,6 +629,8 @@
     const defaultLogoSrc = "avaloncaferadiologo3.png";
     const liveLogoSrc = "avaloncaferadiologo2.png";
 
+    let monthImageUrls = {};
+
     const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
     const monthKeys = ["january","february","march","april","may","june","july","august","september","october","november","december"];
 
@@ -801,6 +803,21 @@
 
       // Bust browser cache so removed/replaced month images update immediately after admin changes.
       const cacheBust = Date.now();
+      const mapKey = `${currentYear}-${key}`;
+      const cloudUrl = monthImageUrls[mapKey];
+      if (cloudUrl) {
+        const sep = cloudUrl.includes("?") ? "&" : "?";
+        monthImage.onload = () => {
+          monthImage.style.visibility = "visible";
+        };
+        monthImage.onerror = () => {
+          monthImage.style.visibility = "hidden";
+          monthImage.removeAttribute("src");
+        };
+        monthImage.src = `${cloudUrl}${sep}t=${cacheBust}`;
+        return;
+      }
+
       const yearSpecific = `images/month-${currentYear}-${key}.jpg?t=${cacheBust}`;
       const generic = `images/month-${key}.jpg?t=${cacheBust}`;
 
@@ -1177,16 +1194,23 @@
       audio.play().catch(()=>{});
     }
 
-    fetch(`/api/episodes?t=${Date.now()}`)
-      .then(r => r.json())
-      .then(data => {
+    Promise.all([
+      fetch(`/api/episodes?t=${Date.now()}`).then((r) => r.json()),
+      fetch(`/api/month-images?t=${Date.now()}`)
+        .then((r) => r.json())
+        .catch(() => ({}))
+    ])
+      .then(([data, monthMap]) => {
         episodes = Array.isArray(data) ? data : [];
+        monthImageUrls =
+          monthMap && typeof monthMap === "object" && !Array.isArray(monthMap) ? monthMap : {};
         buildIndex();
         renderCalendar();
         renderMonthImage();
       })
       .catch(() => {
         episodes = [];
+        monthImageUrls = {};
         buildIndex();
         renderCalendar();
         renderMonthImage();

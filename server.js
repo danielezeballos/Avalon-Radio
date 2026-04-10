@@ -4,10 +4,34 @@ const path = require("path");
 
 const port = process.env.PORT || 4000;
 const publicDir = __dirname;
-const episodesPath = path.join(publicDir, "episodes.json");
-const liveConfigPath = path.join(publicDir, "live-config.json");
-const uploadsDir = path.join(publicDir, "mp3");
-const imagesDir = path.join(publicDir, "images");
+const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : publicDir;
+const episodesPath = path.join(dataDir, "episodes.json");
+const liveConfigPath = path.join(dataDir, "live-config.json");
+const uploadsDir = path.join(dataDir, "mp3");
+const imagesDir = path.join(dataDir, "images");
+const monthImagesMapPath = path.join(dataDir, "month-images.json");
+
+let cloudinary = null;
+function cloudinaryEnabled() {
+  return !!(
+    process.env.CLOUDINARY_URL ||
+    (process.env.CLOUDINARY_CLOUD_NAME &&
+      process.env.CLOUDINARY_API_KEY &&
+      process.env.CLOUDINARY_API_SECRET)
+  );
+}
+if (cloudinaryEnabled()) {
+  cloudinary = require("cloudinary").v2;
+  if (process.env.CLOUDINARY_URL) {
+    cloudinary.config();
+  } else {
+    cloudinary.config({
+      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+      api_key: process.env.CLOUDINARY_API_KEY,
+      api_secret: process.env.CLOUDINARY_API_SECRET
+    });
+  }
+}
 
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir, { recursive: true });
@@ -111,6 +135,40 @@ function saveLiveConfig(config, callback) {
   fs.writeFile(liveConfigPath, JSON.stringify({ enabled, liveUrl }, null, 2), "utf8", callback);
 }
 
+function loadMonthImagesMap(callback) {
+  fs.readFile(monthImagesMapPath, "utf8", (err, data) => {
+    if (err) {
+      if (err.code === "ENOENT") return callback(null, {});
+      return callback(err);
+    }
+    try {
+      const parsed = JSON.parse(data);
+      callback(null, parsed && typeof parsed === "object" ? parsed : {});
+    } catch (e) {
+      callback(e);
+    }
+  });
+}
+
+function saveMonthImagesMap(map, callback) {
+  fs.writeFile(monthImagesMapPath, JSON.stringify(map, null, 2), "utf8", callback);
+}
+
+function monthMapKey(yearNum, monthKeyRaw) {
+  return `${yearNum}-${monthKeyRaw}`;
+}
+
+function uploadBufferCloudinary(buffer, options, callback) {
+  const stream = cloudinary.uploader.upload_stream(options, (err, result) => {
+    if (err) return callback(err);
+    if (!result || !result.secure_url) {
+      return callback(new Error("Cloudinary upload returned no URL"));
+    }
+    callback(null, result);
+  });
+  stream.end(buffer);
+}
+
 const server = http.createServer((req, res) => {
   const rawPath = req.url.split("?")[0] || "/";
   const requestPath = rawPath.replace(/\/+$/, "") || "/";
@@ -173,6 +231,24 @@ const server = http.createServer((req, res) => {
       }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(config));
+    });
+    return;
+  }
+
+  if (requestPath === "/api/month-images" && req.method === "GET") {
+    loadMonthImagesMap((err, map) => {
+      if (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Could not read month images map" }));
+        return;
+      }
+      const out = {};
+      for (const [k, v] of Object.entries(map || {})) {
+        if (typeof v === "string") out[k] = v;
+        else if (v && typeof v.url === "string") out[k] = v.url;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(out));
     });
     return;
   }
@@ -259,16 +335,9 @@ const server = http.createServer((req, res) => {
         return;
       }
 
-      const targetPath = path.join(uploadsDir, filename);
-      const audioUrl = "mp3/" + filename;
+      const fileBuffer = Buffer.from(fileContentBinary, "binary");
 
-      fs.writeFile(targetPath, fileContentBinary, "binary", (err) => {
-        if (err) {
-          res.writeHead(500, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Could not save uploaded file" }));
-          return;
-        }
-
+      function pushEpisodeAndRespond(audioUrl) {
         loadEpisodes((cfgErr, episodes) => {
           const list = cfgErr || !Array.isArray(episodes) ? [] : episodes.slice();
           const date = fields.date || new Date().toISOString().slice(0, 10);
@@ -290,6 +359,40 @@ const server = http.createServer((req, res) => {
             res.end(JSON.stringify({ filename, audioUrl }));
           });
         });
+      }
+
+      if (cloudinary) {
+        uploadBufferCloudinary(
+          fileBuffer,
+          {
+            resource_type: "video",
+            folder: "avalon/episodes",
+            use_filename: true,
+            unique_filename: true,
+            filename_override: path.basename(filename)
+          },
+          (upErr, result) => {
+            if (upErr) {
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: upErr.message || "Cloud upload failed" }));
+              return;
+            }
+            pushEpisodeAndRespond(result.secure_url);
+          }
+        );
+        return;
+      }
+
+      const targetPath = path.join(uploadsDir, filename);
+      const audioUrl = "mp3/" + filename;
+
+      fs.writeFile(targetPath, fileContentBinary, "binary", (err) => {
+        if (err) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Could not save uploaded file" }));
+          return;
+        }
+        pushEpisodeAndRespond(audioUrl);
       });
     });
     return;
@@ -364,6 +467,56 @@ const server = http.createServer((req, res) => {
 
       const targetName = `month-${yearNum}-${monthKeyRaw}.jpg`;
       const targetPath = path.join(imagesDir, targetName);
+      const mapKey = monthMapKey(yearNum, monthKeyRaw);
+      const fileBuffer = Buffer.from(fileContentBinary, "binary");
+
+      function respondOk(extra) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            month: monthKeyRaw,
+            year: yearNum,
+            filename: targetName,
+            ...(extra || {})
+          })
+        );
+      }
+
+      if (cloudinary) {
+        const publicId = `month-${yearNum}-${monthKeyRaw}`;
+        uploadBufferCloudinary(
+          fileBuffer,
+          {
+            resource_type: "image",
+            folder: "avalon/months",
+            public_id: publicId,
+            overwrite: true
+          },
+          (upErr, result) => {
+            if (upErr) {
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: upErr.message || "Cloud upload failed" }));
+              return;
+            }
+            loadMonthImagesMap((mapErr, map) => {
+              const next = mapErr || !map || typeof map !== "object" ? {} : { ...map };
+              next[mapKey] = {
+                url: result.secure_url,
+                publicId: result.public_id || publicId
+              };
+              saveMonthImagesMap(next, (saveErr) => {
+                if (saveErr) {
+                  res.writeHead(500, { "Content-Type": "application/json" });
+                  res.end(JSON.stringify({ error: "Could not save month image map" }));
+                  return;
+                }
+                respondOk({ imageUrl: result.secure_url });
+              });
+            });
+          }
+        );
+        return;
+      }
 
       fs.writeFile(targetPath, fileContentBinary, "binary", (err) => {
         if (err) {
@@ -371,8 +524,7 @@ const server = http.createServer((req, res) => {
           res.end(JSON.stringify({ error: "Could not save month image" }));
           return;
         }
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ month: monthKeyRaw, year: yearNum, filename: targetName }));
+        respondOk();
       });
     });
     return;
@@ -405,26 +557,74 @@ const server = http.createServer((req, res) => {
         }
         const targetName = `month-${yearNum}-${monthKeyRaw}.jpg`;
         const targetPath = path.join(imagesDir, targetName);
-        const resolved = path.resolve(targetPath);
-        const resolvedImages = path.resolve(imagesDir);
-        if (!resolved.startsWith(resolvedImages + path.sep)) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Invalid path" }));
-          return;
-        }
-        fs.unlink(resolved, (err) => {
-          if (err) {
-            if (err.code === "ENOENT") {
-              res.writeHead(200, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ ok: true, deleted: false }));
-              return;
-            }
-            res.writeHead(500, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Could not delete month image" }));
+        const mapKey = monthMapKey(yearNum, monthKeyRaw);
+
+        function removeLocalFile(done) {
+          const resolved = path.resolve(targetPath);
+          const resolvedImages = path.resolve(imagesDir);
+          if (!resolved.startsWith(resolvedImages + path.sep)) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Invalid path" }));
             return;
           }
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: true, deleted: true }));
+          fs.unlink(resolved, (err) => {
+            if (err) {
+              if (err.code === "ENOENT") return done(null, false);
+              return done(err);
+            }
+            done(null, true);
+          });
+        }
+
+        loadMonthImagesMap((mapErr, map) => {
+          const safeMap = mapErr || !map || typeof map !== "object" ? {} : map;
+          const entry = safeMap[mapKey];
+          const cloudEntry = entry && typeof entry === "object" && entry.publicId;
+
+          if (cloudinary && cloudEntry) {
+            cloudinary.uploader.destroy(entry.publicId, { resource_type: "image" }, (destroyErr) => {
+              if (destroyErr) {
+                res.writeHead(500, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: destroyErr.message || "Could not delete cloud image" }));
+                return;
+              }
+              delete safeMap[mapKey];
+              saveMonthImagesMap(safeMap, (saveErr) => {
+                if (saveErr) {
+                  res.writeHead(500, { "Content-Type": "application/json" });
+                  res.end(JSON.stringify({ error: "Could not update month image map" }));
+                  return;
+                }
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ ok: true, deleted: true }));
+              });
+            });
+            return;
+          }
+
+          if (cloudinary && entry && typeof entry === "object" && entry.url && !entry.publicId) {
+            delete safeMap[mapKey];
+            saveMonthImagesMap(safeMap, (saveErr) => {
+              if (saveErr) {
+                res.writeHead(500, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: "Could not update month image map" }));
+                return;
+              }
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ ok: true, deleted: true }));
+            });
+            return;
+          }
+
+          removeLocalFile((unlinkErr, deleted) => {
+            if (unlinkErr) {
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "Could not delete month image" }));
+              return;
+            }
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true, deleted }));
+          });
         });
       } catch (e) {
         res.writeHead(400, { "Content-Type": "application/json" });
