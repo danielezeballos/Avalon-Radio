@@ -169,6 +169,57 @@ function uploadBufferCloudinary(buffer, options, callback) {
   stream.end(buffer);
 }
 
+function adminPassword() {
+  return process.env.AVALON_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || "";
+}
+
+function adminAuthConfigured() {
+  const p = adminPassword();
+  return typeof p === "string" && p.length > 0;
+}
+
+function adminUser() {
+  return process.env.AVALON_ADMIN_USER || process.env.ADMIN_USER || "admin";
+}
+
+function checkAdminAuth(req, res) {
+  if (!adminAuthConfigured()) return true;
+  const auth = req.headers.authorization || "";
+  const expectedUser = adminUser();
+  const expectedPass = adminPassword();
+  if (!auth.startsWith("Basic ")) {
+    res.writeHead(401, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "WWW-Authenticate": 'Basic realm="Avalon Admin"'
+    });
+    res.end("Unauthorized");
+    return false;
+  }
+  let decoded;
+  try {
+    decoded = Buffer.from(auth.slice(6).trim(), "base64").toString("utf8");
+  } catch (_) {
+    res.writeHead(401, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "WWW-Authenticate": 'Basic realm="Avalon Admin"'
+    });
+    res.end("Unauthorized");
+    return false;
+  }
+  const sep = decoded.indexOf(":");
+  const user = sep >= 0 ? decoded.slice(0, sep) : "";
+  const pass = sep >= 0 ? decoded.slice(sep + 1) : "";
+  if (user !== expectedUser || pass !== expectedPass) {
+    res.writeHead(401, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "WWW-Authenticate": 'Basic realm="Avalon Admin"'
+    });
+    res.end("Unauthorized");
+    return false;
+  }
+  return true;
+}
+
 const server = http.createServer((req, res) => {
   const rawPath = req.url.split("?")[0] || "/";
   const requestPath = rawPath.replace(/\/+$/, "") || "/";
@@ -179,6 +230,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (requestPath === "/admin") {
+    if (!checkAdminAuth(req, res)) return;
     const adminPath = path.join(publicDir, "admin.html");
     return sendFile(res, adminPath, "text/html");
   }
@@ -197,6 +249,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (requestPath === "/api/episodes" && req.method === "POST") {
+    if (!checkAdminAuth(req, res)) return;
     let body = "";
     req.on("data", (chunk) => {
       body += chunk;
@@ -254,6 +307,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (requestPath === "/api/live-config" && req.method === "POST") {
+    if (!checkAdminAuth(req, res)) return;
     let body = "";
     req.on("data", (chunk) => {
       body += chunk;
@@ -286,6 +340,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (requestPath === "/upload/episode" && req.method === "POST") {
+    if (!checkAdminAuth(req, res)) return;
     const contentType = req.headers["content-type"] || "";
     const boundaryMatch = contentType.match(/boundary=(.+)$/);
     if (!boundaryMatch) {
@@ -399,6 +454,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (requestPath === "/upload/month-image" && req.method === "POST") {
+    if (!checkAdminAuth(req, res)) return;
     const contentType = req.headers["content-type"] || "";
     const boundaryMatch = contentType.match(/boundary=(.+)$/);
     if (!boundaryMatch) {
@@ -531,6 +587,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (requestPath === "/api/delete-month-image" && req.method === "POST") {
+    if (!checkAdminAuth(req, res)) return;
     let body = "";
     req.on("data", (chunk) => {
       body += chunk;
