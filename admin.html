@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Avalon Radio – Admin</title>
+  <style>
+    body{
+      margin:0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+      background:#f5f5f7;
+      color:#111;
+      padding:24px;
+      box-sizing:border-box;
+    }
+    h1{
+      margin:0 0 8px;
+      font-size:1.6rem;
+    }
+    p.description{
+      margin:0 0 18px;
+      color:#555;
+      max-width:40rem;
+      font-size:0.95rem;
+    }
+    .panel{
+      background:#fff;
+      border-radius:14px;
+      padding:16px 18px 18px;
+      box-shadow:0 8px 22px rgba(0,0,0,0.06);
+      max-width:760px;
+      margin-bottom:18px;
+    }
+    .panel h2{
+      margin:0 0 0.8rem;
+      font-size:1.1rem;
+    }
+    label{
+      font-size:0.95rem;
+      font-weight:500;
+      display:block;
+      margin-bottom:0.35rem;
+    }
+    input[type="text"],
+    input[type="date"],
+    textarea{
+      width:100%;
+      padding:7px 9px;
+      border-radius:9px;
+      border:1px solid #d0d0d5;
+      font-size:0.9rem;
+      box-sizing:border-box;
+      margin-bottom:8px;
+    }
+    textarea{
+      min-height:80px;
+      resize:vertical;
+    }
+    input:focus,
+    textarea:focus{
+      outline:none;
+      border-color:#007aff;
+      box-shadow:0 0 0 2px rgba(0,122,255,0.22);
+    }
+    .hint{
+      font-size:0.82rem;
+      color:#777;
+      margin:2px 0 0;
+    }
+    .buttons{
+      display:flex;
+      gap:10px;
+      margin-top:10px;
+    }
+    button{
+      border-radius:999px;
+      border:none;
+      padding:7px 16px;
+      font-size:0.9rem;
+      font-weight:500;
+      cursor:pointer;
+    }
+    button.primary{
+      background:#111;
+      color:#fff;
+    }
+    button.secondary{
+      background:#e5e5ea;
+      color:#111;
+    }
+    #status{
+      margin-top:10px;
+      font-size:0.9rem;
+      min-height:1.2em;
+    }
+    #status.ok{ color:#0a7b39; }
+    #status.error{ color:#b00020; }
+    table{
+      width:100%;
+      border-collapse:collapse;
+      font-size:0.9rem;
+    }
+    th, td{
+      padding:6px 4px;
+      text-align:left;
+      border-bottom:1px solid #ececf2;
+    }
+    th{
+      font-size:0.8rem;
+      text-transform:uppercase;
+      color:#777;
+    }
+    td.actions{
+      text-align:right;
+    }
+    td.actions button{
+      padding:4px 10px;
+      font-size:0.8rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>Avalon Radio – Admin</h1>
+  <p class="description">
+    Add episodes to the calendar. Each episode has a date, title, optional description and an MP3 file.
+  </p>
+
+  <div class="panel">
+    <h2>1. Add new episode</h2>
+    <label for="dateInput">Date</label>
+    <input id="dateInput" type="date" />
+
+    <label for="titleInput">Title</label>
+    <input id="titleInput" type="text" placeholder="Episode title" />
+
+    <label for="descriptionInput">Description (optional)</label>
+    <textarea id="descriptionInput" placeholder="Short description, guests, topics..."></textarea>
+
+    <label for="colorSelect">Episode color</label>
+    <select id="colorSelect" style="width:100%;padding:7px 9px;border-radius:9px;border:1px solid #d0d0d5;font-size:0.9rem;box-sizing:border-box;margin-bottom:8px;">
+      <option value="red">Red</option>
+      <option value="orange">Orange</option>
+      <option value="yellow">Yellow</option>
+      <option value="green">Green</option>
+      <option value="blue" selected>Blue</option>
+      <option value="indigo">Indigo</option>
+      <option value="violet">Violet</option>
+    </select>
+
+    <label for="fileInput">MP3 file</label>
+    <input id="fileInput" type="file" accept=".mp3,audio/mpeg" />
+    <p class="hint">File will be stored in <code>mp3/</code> and linked to the chosen date.</p>
+
+    <div class="buttons">
+      <button class="primary" id="uploadBtn">Upload episode</button>
+      <button class="secondary" id="reloadBtn">Reload list</button>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <div class="panel">
+    <h2>2. Existing episodes</h2>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:110px;">Date</th>
+          <th>Title</th>
+          <th style="width:80px;">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="episodesTableBody">
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>3. Month images</h2>
+    <label for="monthSelect">Month</label>
+    <select id="monthSelect" style="width:100%;padding:7px 9px;border-radius:9px;border:1px solid #d0d0d5;font-size:0.9rem;box-sizing:border-box;margin-bottom:8px;">
+      <option value="january">January</option>
+      <option value="february">February</option>
+      <option value="march">March</option>
+      <option value="april">April</option>
+      <option value="may">May</option>
+      <option value="june">June</option>
+      <option value="july">July</option>
+      <option value="august">August</option>
+      <option value="september">September</option>
+      <option value="october">October</option>
+      <option value="november">November</option>
+      <option value="december">December</option>
+    </select>
+
+    <label for="monthYearInput">Year</label>
+    <input id="monthYearInput" type="number" min="1900" max="3000" />
+
+    <label for="monthImageFile">Image file (JPG)</label>
+    <input id="monthImageFile" type="file" accept=".jpg,.jpeg,image/jpeg" />
+    <p class="hint">This will be saved as <code>month-[year]-[month].jpg</code> in <code>images/</code> and shown for that month and year.</p>
+
+    <div class="buttons">
+      <button class="primary" id="uploadMonthImageBtn">Upload month image</button>
+      <button class="secondary" id="deleteMonthImageBtn">Delete month image</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>4. Live stream</h2>
+    <label for="liveEnabledInput">Enable live audio</label>
+    <input id="liveEnabledInput" type="checkbox" style="transform:scale(1.1); margin-bottom:12px;" />
+
+    <label for="liveUrlInput">Live stream URL</label>
+    <input id="liveUrlInput" type="text" placeholder="YouTube live URL or direct audio stream URL" />
+    <p class="hint">
+      You can paste a YouTube Live page URL (recommended for easy listener access)
+      or a direct audio stream URL.
+    </p>
+
+    <div class="buttons">
+      <button class="primary" id="saveLiveConfigBtn">Save live settings</button>
+    </div>
+    <div id="liveStatus" style="margin-top:10px;font-size:0.9rem;min-height:1.2em;"></div>
+  </div>
+
+  <script>
+    const dateInput = document.getElementById("dateInput");
+    const titleInput = document.getElementById("titleInput");
+    const descriptionInput = document.getElementById("descriptionInput");
+    const colorSelect = document.getElementById("colorSelect");
+    const fileInput = document.getElementById("fileInput");
+    const statusEl = document.getElementById("status");
+    const tableBody = document.getElementById("episodesTableBody");
+    const monthSelect = document.getElementById("monthSelect");
+    const monthImageFile = document.getElementById("monthImageFile");
+    const monthYearInput = document.getElementById("monthYearInput");
+    const liveEnabledInput = document.getElementById("liveEnabledInput");
+    const liveUrlInput = document.getElementById("liveUrlInput");
+    const liveStatusEl = document.getElementById("liveStatus");
+
+    let episodes = [];
+
+    function setStatus(msg, type){
+      statusEl.textContent = msg || "";
+      statusEl.className = type || "";
+    }
+
+    function formatDate(dateStr){
+      if (!dateStr) return "";
+      return dateStr;
+    }
+
+    async function loadEpisodes(){
+      try{
+        const res = await fetch("/api/episodes");
+        if(!res.ok) throw new Error();
+        episodes = await res.json();
+        if (!Array.isArray(episodes)) episodes = [];
+        renderEpisodes();
+        setStatus("Loaded episodes.", "ok");
+      } catch(e){
+        setStatus("Could not load episodes.", "error");
+      }
+    }
+
+    function renderEpisodes(){
+      if (!episodes.length){
+        tableBody.innerHTML = '<tr><td colspan="3" style="color:#777;font-size:0.9rem;">No episodes yet.</td></tr>';
+        return;
+      }
+      const sorted = [...episodes].sort((a,b) => (a.date || "").localeCompare(b.date || ""));
+      tableBody.innerHTML = sorted.map((ep, idx) => (
+        `<tr>
+          <td>${formatDate(ep.date)}</td>
+          <td>${escapeHtml(ep.title || "Episode")}</td>
+          <td class="actions"><button data-index="${idx}" data-action="delete">Delete</button></td>
+        </tr>`
+      )).join("");
+    }
+
+    function escapeHtml(str){
+      return String(str)
+        .replaceAll("&","&amp;")
+        .replaceAll("<","&lt;")
+        .replaceAll(">","&gt;")
+        .replaceAll("\"","&quot;")
+        .replaceAll("'","&#039;");
+    }
+
+    document.getElementById("uploadBtn").addEventListener("click", async () => {
+      if (!fileInput.files.length){
+        setStatus("Choose an MP3 file first.", "error");
+        return;
+      }
+      if (!dateInput.value){
+        setStatus("Choose a date for the episode.", "error");
+        return;
+      }
+      const chosenDate = dateInput.value;
+      const chosenTitle = titleInput.value || "Episode";
+      const chosenDescription = descriptionInput.value || "";
+      const chosenColor = colorSelect.value;
+      const formData = new FormData();
+      formData.append("file", fileInput.files[0]);
+      formData.append("date", chosenDate);
+      formData.append("title", chosenTitle);
+      formData.append("description", chosenDescription);
+      formData.append("color", chosenColor);
+
+      try{
+        const res = await fetch("/upload/episode", {
+          method:"POST",
+          body: formData
+        });
+        if(!res.ok) throw new Error();
+
+        // Some server versions may ignore the `color` field on multipart upload.
+        // To make the calendar coloring reliable, persist the chosen color via /api/episodes.
+        const uploadInfo = await res.json();
+        try{
+          const listRes = await fetch("/api/episodes");
+          const list = await listRes.json();
+          if (Array.isArray(list)){
+            let idx = -1;
+            // Prefer matching by both date + audioUrl (most accurate).
+            for (let i=list.length - 1; i>=0; i--){
+              if (list[i] && list[i].date === chosenDate && list[i].audioUrl === uploadInfo.audioUrl){
+                idx = i;
+                break;
+              }
+            }
+            // Fallback to date+title.
+            if (idx === -1){
+              for (let i=list.length - 1; i>=0; i--){
+                if (list[i] && list[i].date === chosenDate && (list[i].title || "") === chosenTitle){
+                  idx = i;
+                  break;
+                }
+              }
+            }
+            if (idx !== -1){
+              list[idx].color = chosenColor;
+              const saveRes = await fetch("/api/episodes", {
+                method:"POST",
+                headers: { "Content-Type":"application/json" },
+                body: JSON.stringify(list)
+              });
+              if(!saveRes.ok) throw new Error();
+            }
+          }
+        } catch(_colorErr){
+          // If color persistence fails, still consider the upload successful.
+        }
+
+        setStatus("Uploaded episode.", "ok");
+        fileInput.value = "";
+        titleInput.value = "";
+        descriptionInput.value = "";
+        await loadEpisodes();
+      } catch(e){
+        setStatus("Error uploading episode.", "error");
+      }
+    });
+
+    document.getElementById("reloadBtn").addEventListener("click", loadEpisodes);
+
+    tableBody.addEventListener("click", async (e) => {
+      const btn = e.target.closest("button[data-action]");
+      if (!btn) return;
+      const action = btn.getAttribute("data-action");
+      const index = Number(btn.getAttribute("data-index"));
+      if (action === "delete"){
+        if (!confirm("Remove this episode from the calendar?")) return;
+        const sorted = [...episodes].sort((a,b) => (a.date || "").localeCompare(b.date || ""));
+        sorted.splice(index, 1);
+        try{
+          const res = await fetch("/api/episodes", {
+            method:"POST",
+            headers: { "Content-Type":"application/json" },
+            body: JSON.stringify(sorted)
+          });
+          if(!res.ok) throw new Error();
+          setStatus("Episode removed.", "ok");
+          episodes = sorted;
+          renderEpisodes();
+        } catch(e){
+          setStatus("Error removing episode.", "error");
+        }
+      }
+    });
+
+    // Default date = today
+    const today = new Date().toISOString().slice(0,10);
+    dateInput.value = today;
+    monthYearInput.value = today.slice(0,4);
+
+    loadEpisodes();
+
+    async function loadLiveConfig(){
+      try{
+        const res = await fetch("/api/live-config");
+        if(!res.ok) throw new Error();
+        const cfg = await res.json();
+        liveEnabledInput.checked = !!cfg.enabled;
+        liveUrlInput.value = (cfg.liveUrl || "").toString();
+        setLiveStatus("Live config loaded.", "ok");
+      } catch(e){
+        setLiveStatus("Could not load live config.", "error");
+      }
+    }
+
+    function setLiveStatus(msg, type){
+      liveStatusEl.textContent = msg || "";
+      liveStatusEl.style.color = type === "error" ? "#b00020" : (type === "ok" ? "#0a7b39" : "#777");
+    }
+
+    document.getElementById("uploadMonthImageBtn").addEventListener("click", async () => {
+      if (!monthImageFile.files.length){
+        setStatus("Choose an image file first.", "error");
+        return;
+      }
+      const yearVal = monthYearInput.value.trim();
+      if (!yearVal){
+        setStatus("Enter a year for the month image.", "error");
+        return;
+      }
+      const formData = new FormData();
+      formData.append("file", monthImageFile.files[0]);
+      formData.append("month", monthSelect.value);
+      formData.append("year", yearVal);
+      try{
+        const res = await fetch("/upload/month-image", {
+          method: "POST",
+          body: formData
+        });
+        if (!res.ok) throw new Error();
+        await res.json();
+        setStatus("Month image updated.", "ok");
+        monthImageFile.value = "";
+      } catch(e){
+        setStatus("Error uploading month image.", "error");
+      }
+    });
+
+    document.getElementById("deleteMonthImageBtn").addEventListener("click", async () => {
+      const yearVal = monthYearInput.value.trim();
+      if (!yearVal){
+        setStatus("Enter a year for the month image.", "error");
+        return;
+      }
+      const monthLabel = monthSelect.options[monthSelect.selectedIndex].textContent;
+      if (!confirm(`Delete the month image for ${monthLabel} ${yearVal}?`)) return;
+      try{
+        const res = await fetch("/api/delete-month-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ month: monthSelect.value, year: yearVal })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok){
+          if (res.status === 404){
+            setStatus("Delete failed: server is running old code. Stop it (Ctrl+C) and run npm start again.", "error");
+            return;
+          }
+          setStatus(data.error || "Error deleting month image.", "error");
+          return;
+        }
+        if (data.deleted){
+          setStatus("Month image deleted.", "ok");
+        } else {
+          setStatus("No image file for that month.", "ok");
+        }
+      } catch(e){
+        setStatus("Error deleting month image.", "error");
+      }
+    });
+
+    document.getElementById("saveLiveConfigBtn").addEventListener("click", async () => {
+      try{
+        const enabled = !!liveEnabledInput.checked;
+        const liveUrl = (liveUrlInput.value || "").trim();
+        if(enabled && !liveUrl){
+          setLiveStatus("Live URL is required when enabled.", "error");
+          return;
+        }
+
+        const res = await fetch("/api/live-config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled, liveUrl })
+        });
+        if(!res.ok) throw new Error();
+        setLiveStatus("Live settings saved.", "ok");
+      } catch(e){
+        setLiveStatus("Could not save live settings.", "error");
+      }
+    });
+
+    loadLiveConfig();
+  </script>
+</body>
+</html>
+
