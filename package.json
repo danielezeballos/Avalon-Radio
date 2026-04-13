@@ -10,8 +10,6 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
-  "dependencies": {
-    "cloudinary": "^2.9.0"
-  }
+  "type": "commonjs"
 }
+
