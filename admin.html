@@ -123,6 +123,9 @@
   <h1>Avalon Radio – Admin</h1>
   <p class="description">
     Add episodes to the calendar. Each episode has a date, title, optional description and an MP3 file.
+    The episode list is saved on the server as <code>episodes.json</code>; each episode points to an
+    <code>audioUrl</code>. If that URL pointed at Cloudinary (or any CDN) and you delete the file there,
+    the episode will break—keep media in one place and download backups before big changes.
   </p>
 
   <div class="panel">
@@ -174,7 +177,20 @@
   </div>
 
   <div class="panel">
-    <h2>3. Month images</h2>
+    <h2>3. Backup</h2>
+    <p class="hint" style="margin-bottom:10px;">
+      Download a copy of your episode list (JSON). Uploads live under <code>mp3/</code> on the server—back those
+      files up separately (copy the folder from your machine or your host’s volume). If you use Cloudinary
+      elsewhere, do not delete assets there until you have moved hosting or updated every <code>audioUrl</code>.
+    </p>
+    <div class="buttons">
+      <button class="secondary" type="button" id="downloadBackupBtn">Download episodes backup (JSON)</button>
+    </div>
+    <div id="backupStatus" style="margin-top:10px;font-size:0.9rem;min-height:1.2em;"></div>
+  </div>
+
+  <div class="panel">
+    <h2>4. Month images</h2>
     <label for="monthSelect">Month</label>
     <select id="monthSelect" style="width:100%;padding:7px 9px;border-radius:9px;border:1px solid #d0d0d5;font-size:0.9rem;box-sizing:border-box;margin-bottom:8px;">
       <option value="january">January</option>
@@ -196,7 +212,7 @@
 
     <label for="monthImageFile">Image file (JPG)</label>
     <input id="monthImageFile" type="file" accept=".jpg,.jpeg,image/jpeg" />
-    <p class="hint">Saved as <code>month-[year]-[month].jpg</code> under <code>images/</code> on the server, or to Cloudinary when cloud credentials are set, and shown for that month and year.</p>
+    <p class="hint">This will be saved as <code>month-[year]-[month].jpg</code> in <code>images/</code> and shown for that month and year.</p>
 
     <div class="buttons">
       <button class="primary" id="uploadMonthImageBtn">Upload month image</button>
@@ -205,7 +221,7 @@
   </div>
 
   <div class="panel">
-    <h2>4. Live stream</h2>
+    <h2>5. Live stream</h2>
     <label for="liveEnabledInput">Enable live audio</label>
     <input id="liveEnabledInput" type="checkbox" style="transform:scale(1.1); margin-bottom:12px;" />
 
@@ -236,6 +252,7 @@
     const liveEnabledInput = document.getElementById("liveEnabledInput");
     const liveUrlInput = document.getElementById("liveUrlInput");
     const liveStatusEl = document.getElementById("liveStatus");
+    const backupStatusEl = document.getElementById("backupStatus");
 
     let episodes = [];
 
@@ -362,6 +379,29 @@
     });
 
     document.getElementById("reloadBtn").addEventListener("click", loadEpisodes);
+
+    document.getElementById("downloadBackupBtn").addEventListener("click", async () => {
+      backupStatusEl.textContent = "";
+      backupStatusEl.style.color = "#777";
+      try{
+        const res = await fetch("/api/episodes");
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        const stamp = new Date().toISOString().slice(0, 10);
+        a.href = url;
+        a.download = `avalon-episodes-backup-${stamp}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        backupStatusEl.textContent = "Download started.";
+        backupStatusEl.style.color = "#0a7b39";
+      } catch(e){
+        backupStatusEl.textContent = "Could not download backup.";
+        backupStatusEl.style.color = "#b00020";
+      }
+    });
 
     tableBody.addEventListener("click", async (e) => {
       const btn = e.target.closest("button[data-action]");
