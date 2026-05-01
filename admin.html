@@ -256,6 +256,8 @@
 
     let episodes = [];
 
+    const adminFetch = { credentials: "include" };
+
     function setStatus(msg, type){
       statusEl.textContent = msg || "";
       statusEl.className = type || "";
@@ -268,7 +270,7 @@
 
     async function loadEpisodes(){
       try{
-        const res = await fetch("/api/episodes");
+        const res = await fetch("/api/episodes", adminFetch);
         if(!res.ok) throw new Error();
         episodes = await res.json();
         if (!Array.isArray(episodes)) episodes = [];
@@ -326,7 +328,8 @@
       try{
         const res = await fetch("/upload/episode", {
           method:"POST",
-          body: formData
+          body: formData,
+          ...adminFetch
         });
         if(!res.ok) throw new Error();
 
@@ -334,7 +337,7 @@
         // To make the calendar coloring reliable, persist the chosen color via /api/episodes.
         const uploadInfo = await res.json();
         try{
-          const listRes = await fetch("/api/episodes");
+          const listRes = await fetch("/api/episodes", adminFetch);
           const list = await listRes.json();
           if (Array.isArray(list)){
             let idx = -1;
@@ -359,7 +362,8 @@
               const saveRes = await fetch("/api/episodes", {
                 method:"POST",
                 headers: { "Content-Type":"application/json" },
-                body: JSON.stringify(list)
+                body: JSON.stringify(list),
+                ...adminFetch
               });
               if(!saveRes.ok) throw new Error();
             }
@@ -416,7 +420,8 @@
           const res = await fetch("/api/episodes", {
             method:"POST",
             headers: { "Content-Type":"application/json" },
-            body: JSON.stringify(sorted)
+            body: JSON.stringify(sorted),
+            ...adminFetch
           });
           if(!res.ok) throw new Error();
           setStatus("Episode removed.", "ok");
@@ -437,7 +442,7 @@
 
     async function loadLiveConfig(){
       try{
-        const res = await fetch("/api/live-config");
+        const res = await fetch("/api/live-config", adminFetch);
         if(!res.ok) throw new Error();
         const cfg = await res.json();
         liveEnabledInput.checked = !!cfg.enabled;
@@ -470,7 +475,8 @@
       try{
         const res = await fetch("/upload/month-image", {
           method: "POST",
-          body: formData
+          body: formData,
+          ...adminFetch
         });
         if (!res.ok) throw new Error();
         await res.json();
@@ -493,7 +499,8 @@
         const res = await fetch("/api/delete-month-image", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ month: monthSelect.value, year: yearVal })
+          body: JSON.stringify({ month: monthSelect.value, year: yearVal }),
+          ...adminFetch
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok){
@@ -526,7 +533,8 @@
         const res = await fetch("/api/live-config", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled, liveUrl })
+          body: JSON.stringify({ enabled, liveUrl }),
+          ...adminFetch
         });
         if(!res.ok) throw new Error();
         setLiveStatus("Live settings saved.", "ok");

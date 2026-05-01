@@ -1,14 +1,38 @@
 const http = require("http");
+const https = require("https");
 const fs = require("fs");
 const path = require("path");
-const Busboy = require("busboy");
 
 const port = process.env.PORT || 4000;
 const publicDir = __dirname;
-const episodesPath = path.join(publicDir, "episodes.json");
-const liveConfigPath = path.join(publicDir, "live-config.json");
-const uploadsDir = path.join(publicDir, "mp3");
-const imagesDir = path.join(publicDir, "images");
+const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : publicDir;
+const episodesPath = path.join(dataDir, "episodes.json");
+const liveConfigPath = path.join(dataDir, "live-config.json");
+const uploadsDir = path.join(dataDir, "mp3");
+const imagesDir = path.join(dataDir, "images");
+const monthImagesMapPath = path.join(dataDir, "month-images.json");
+
+let cloudinary = null;
+function cloudinaryEnabled() {
+  return !!(
+    process.env.CLOUDINARY_URL ||
+    (process.env.CLOUDINARY_CLOUD_NAME &&
+      process.env.CLOUDINARY_API_KEY &&
+      process.env.CLOUDINARY_API_SECRET)
+  );
+}
+if (cloudinaryEnabled()) {
+  cloudinary = require("cloudinary").v2;
+  if (process.env.CLOUDINARY_URL) {
+    cloudinary.config();
+  } else {
+    cloudinary.config({
+      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+      api_key: process.env.CLOUDINARY_API_KEY,
+      api_secret: process.env.CLOUDINARY_API_SECRET
+    });
+  }
+}
 
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir, { recursive: true });
@@ -69,52 +93,228 @@ function sendFileWithRange(req, res, filePath, contentType) {
 }
 
 function loadEpisodes(callback) {
-  fs.readFile(episodesPath, "utf8", (err, data) => {
-    if (err) {
-      if (err.code === "ENOENT") return callback(null, []);
-      return callback(err);
-    }
-    try {
-      const episodes = JSON.parse(data);
-      callback(null, episodes);
-    } catch (e) {
-      callback(e);
-    }
-  });
+  loadJsonData(episodesPath, "episodes", [], callback);
 }
 
 function saveEpisodes(episodes, callback) {
-  fs.writeFile(episodesPath, JSON.stringify(episodes, null, 2), "utf8", callback);
+  saveJsonData(episodesPath, "episodes", episodes, callback);
 }
 
 function loadLiveConfig(callback) {
-  fs.readFile(liveConfigPath, "utf8", (err, data) => {
-    if (err) {
-      if (err.code === "ENOENT") {
-        return callback(null, { enabled: false, liveUrl: "" });
-      }
-      return callback(err);
-    }
-    try {
-      const parsed = JSON.parse(data);
-      const enabled = !!parsed.enabled;
-      const liveUrl = typeof parsed.liveUrl === "string" ? parsed.liveUrl : "";
-      callback(null, { enabled, liveUrl });
-    } catch (e) {
-      callback(e);
-    }
+  loadJsonData(liveConfigPath, "live-config", { enabled: false, liveUrl: "" }, (err, parsed) => {
+    if (err) return callback(err);
+    const enabled = !!parsed.enabled;
+    const liveUrl = typeof parsed.liveUrl === "string" ? parsed.liveUrl : "";
+    callback(null, { enabled, liveUrl });
   });
 }
 
 function saveLiveConfig(config, callback) {
   const enabled = !!(config && config.enabled);
   const liveUrl = config && typeof config.liveUrl === "string" ? config.liveUrl : "";
-  fs.writeFile(liveConfigPath, JSON.stringify({ enabled, liveUrl }, null, 2), "utf8", callback);
+  saveJsonData(liveConfigPath, "live-config", { enabled, liveUrl }, callback);
 }
 
-function sanitizeFilename(filename, fallback) {
-  const safe = path.basename(String(filename || "").trim());
-  return safe || fallback;
+function loadMonthImagesMap(callback) {
+  loadJsonData(monthImagesMapPath, "month-images", {}, (err, parsed) => {
+    if (err) return callback(err);
+    callback(null, parsed && typeof parsed === "object" ? parsed : {});
+  });
+}
+
+function saveMonthImagesMap(map, callback) {
+  saveJsonData(monthImagesMapPath, "month-images", map, callback);
+}
+
+function monthMapKey(yearNum, monthKeyRaw) {
+  return `${yearNum}-${monthKeyRaw}`;
+}
+
+function uploadBufferCloudinary(buffer, options, callback) {
+  const stream = cloudinary.uploader.upload_stream(options, (err, result) => {
+    if (err) return callback(err);
+    if (!result || !result.secure_url) {
+      return callback(new Error("Cloudinary upload returned no URL"));
+    }
+    callback(null, result);
+  });
+  stream.end(buffer);
+}
+
+function cloudStatePublicId(key) {
+  return `avalon/state/${key}`;
+}
+
+function isCloudResourceMissing(err) {
+  if (!err) return false;
+  if (err.http_code === 404 || err.statusCode === 404) return true;
+  const msg = String(err.message || "").toLowerCase();
+  return msg.includes("not found") || msg.includes("does not exist");
+}
+
+function fetchJsonFromUrl(url, callback) {
+  const client = url.startsWith("https://") ? https : http;
+  client
+    .get(url, (resp) => {
+      if (resp.statusCode && resp.statusCode >= 400) {
+        callback(new Error(`Failed to fetch cloud state (${resp.statusCode})`));
+        return;
+      }
+      const chunks = [];
+      resp.on("data", (chunk) => chunks.push(chunk));
+      resp.on("end", () => {
+        try {
+          const raw = Buffer.concat(chunks).toString("utf8");
+          callback(null, JSON.parse(raw));
+        } catch (e) {
+          callback(e);
+        }
+      });
+    })
+    .on("error", callback);
+}
+
+function loadJsonFromCloudinary(key, callback) {
+  if (!cloudinary) {
+    callback(new Error("Cloudinary not configured"));
+    return;
+  }
+  cloudinary.api.resource(
+    cloudStatePublicId(key),
+    { resource_type: "raw" },
+    (err, result) => {
+      if (err) return callback(err);
+      const url = result && (result.secure_url || result.url);
+      if (!url) return callback(new Error("Cloud state URL missing"));
+      fetchJsonFromUrl(url, callback);
+    }
+  );
+}
+
+function loadJsonFromFile(filePath, fallbackValue, callback) {
+  fs.readFile(filePath, "utf8", (err, data) => {
+    if (err) {
+      if (err.code === "ENOENT") return callback(null, fallbackValue);
+      return callback(err);
+    }
+    try {
+      callback(null, JSON.parse(data));
+    } catch (e) {
+      callback(e);
+    }
+  });
+}
+
+function saveJsonToFile(filePath, value, callback) {
+  fs.writeFile(filePath, JSON.stringify(value, null, 2), "utf8", callback);
+}
+
+function saveJsonToCloudinary(key, value, callback) {
+  if (!cloudinary) {
+    callback(new Error("Cloudinary not configured"));
+    return;
+  }
+  uploadBufferCloudinary(
+    Buffer.from(JSON.stringify(value, null, 2), "utf8"),
+    {
+      resource_type: "raw",
+      public_id: cloudStatePublicId(key),
+      overwrite: true,
+      invalidate: true
+    },
+    callback
+  );
+}
+
+function loadJsonData(filePath, key, fallbackValue, callback) {
+  if (!cloudinary) {
+    loadJsonFromFile(filePath, fallbackValue, callback);
+    return;
+  }
+  loadJsonFromCloudinary(key, (cloudErr, value) => {
+    if (!cloudErr) {
+      saveJsonToFile(filePath, value, () => {});
+      callback(null, value);
+      return;
+    }
+    if (isCloudResourceMissing(cloudErr)) {
+      loadJsonFromFile(filePath, fallbackValue, callback);
+      return;
+    }
+    loadJsonFromFile(filePath, fallbackValue, (fileErr, fileValue) => {
+      if (!fileErr) return callback(null, fileValue);
+      callback(cloudErr);
+    });
+  });
+}
+
+function saveJsonData(filePath, key, value, callback) {
+  if (!cloudinary) {
+    saveJsonToFile(filePath, value, callback);
+    return;
+  }
+  saveJsonToCloudinary(key, value, (cloudErr) => {
+    if (!cloudErr) {
+      saveJsonToFile(filePath, value, () => {});
+      callback(null);
+      return;
+    }
+    saveJsonToFile(filePath, value, (fileErr) => {
+      if (!fileErr) return callback(null);
+      callback(cloudErr);
+    });
+  });
+}
+
+function adminPassword() {
+  return process.env.AVALON_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || "";
+}
+
+function adminAuthConfigured() {
+  const p = adminPassword();
+  return typeof p === "string" && p.length > 0;
+}
+
+function adminUser() {
+  return process.env.AVALON_ADMIN_USER || process.env.ADMIN_USER || "admin";
+}
+
+function checkAdminAuth(req, res) {
+  if (!adminAuthConfigured()) return true;
+  const auth = req.headers.authorization || "";
+  const expectedUser = adminUser();
+  const expectedPass = adminPassword();
+  if (!auth.startsWith("Basic ")) {
+    res.writeHead(401, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "WWW-Authenticate": 'Basic realm="Avalon Admin"'
+    });
+    res.end("Unauthorized");
+    return false;
+  }
+  let decoded;
+  try {
+    decoded = Buffer.from(auth.slice(6).trim(), "base64").toString("utf8");
+  } catch (_) {
+    res.writeHead(401, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "WWW-Authenticate": 'Basic realm="Avalon Admin"'
+    });
+    res.end("Unauthorized");
+    return false;
+  }
+  const sep = decoded.indexOf(":");
+  const user = sep >= 0 ? decoded.slice(0, sep) : "";
+  const pass = sep >= 0 ? decoded.slice(sep + 1) : "";
+  if (user !== expectedUser || pass !== expectedPass) {
+    res.writeHead(401, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "WWW-Authenticate": 'Basic realm="Avalon Admin"'
+    });
+    res.end("Unauthorized");
+    return false;
+  }
+  return true;
 }
 
 const server = http.createServer((req, res) => {
@@ -127,6 +327,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (requestPath === "/admin") {
+    if (!checkAdminAuth(req, res)) return;
     const adminPath = path.join(publicDir, "admin.html");
     return sendFile(res, adminPath, "text/html");
   }
@@ -145,6 +346,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (requestPath === "/api/episodes" && req.method === "POST") {
+    if (!checkAdminAuth(req, res)) return;
     let body = "";
     req.on("data", (chunk) => {
       body += chunk;
@@ -183,7 +385,26 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (requestPath === "/api/month-images" && req.method === "GET") {
+    loadMonthImagesMap((err, map) => {
+      if (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Could not read month images map" }));
+        return;
+      }
+      const out = {};
+      for (const [k, v] of Object.entries(map || {})) {
+        if (typeof v === "string") out[k] = v;
+        else if (v && typeof v.url === "string") out[k] = v.url;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(out));
+    });
+    return;
+  }
+
   if (requestPath === "/api/live-config" && req.method === "POST") {
+    if (!checkAdminAuth(req, res)) return;
     let body = "";
     req.on("data", (chunk) => {
       body += chunk;
@@ -216,206 +437,254 @@ const server = http.createServer((req, res) => {
   }
 
   if (requestPath === "/upload/episode" && req.method === "POST") {
+    if (!checkAdminAuth(req, res)) return;
     const contentType = req.headers["content-type"] || "";
-    if (!contentType.toLowerCase().startsWith("multipart/form-data")) {
+    const boundaryMatch = contentType.match(/boundary=(.+)$/);
+    if (!boundaryMatch) {
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Expected multipart form upload" }));
+      res.end(JSON.stringify({ error: "Missing boundary" }));
       return;
     }
-    const busboy = Busboy({
-      headers: req.headers,
-      limits: { files: 1, fields: 10, fileSize: 200 * 1024 * 1024 }
-    });
-    const fields = {};
-    let filename = null;
-    let audioUrl = null;
-    let uploadWriteError = null;
-    let uploadLimitHit = false;
-    let responded = false;
 
-    function reply(status, payload) {
-      if (responded) return;
-      responded = true;
-      res.writeHead(status, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(payload));
-    }
+    const boundary = boundaryMatch[1];
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      const buffer = Buffer.concat(chunks);
+      const bodyStr = buffer.toString("binary");
+      const parts = bodyStr.split("--" + boundary);
 
-    busboy.on("field", (name, value) => {
-      fields[name] = value;
-    });
+      let fileContentBinary = null;
+      let filename = null;
+      let fields = {};
 
-    busboy.on("file", (name, file, info) => {
-      if (name !== "file") {
-        file.resume();
-        return;
+      for (const part of parts) {
+        if (!part.includes("Content-Disposition")) continue;
+        const [rawHeaders, rawBody] = part.split("\r\n\r\n");
+        if (!rawBody) continue;
+        const headers = rawHeaders.split("\r\n");
+        const dispo = headers.find((h) => h.toLowerCase().startsWith("content-disposition"));
+        if (!dispo) continue;
+
+        const nameMatch = dispo.match(/name="([^"]+)"/);
+        const fileMatch = dispo.match(/filename="([^"]*)"/);
+        const fieldName = nameMatch ? nameMatch[1] : null;
+
+        if (fileMatch && fieldName === "file") {
+          filename = path.basename(fileMatch[1] || "episode.mp3");
+          let fileSection = rawBody;
+          fileSection = fileSection.replace(/\r\n--$/, "");
+          fileContentBinary = fileSection;
+        } else if (fieldName) {
+          const value = rawBody.replace(/\r\n--$/, "").trim();
+          fields[fieldName] = value;
+        }
       }
-      filename = sanitizeFilename(info && info.filename, "episode.mp3");
-      const targetPath = path.join(uploadsDir, filename);
-      audioUrl = "mp3/" + filename;
 
-      const output = fs.createWriteStream(targetPath);
-      file.on("limit", () => {
-        uploadLimitHit = true;
-        output.destroy();
-      });
-      file.on("error", (err) => {
-        uploadWriteError = err;
-      });
-      output.on("error", (err) => {
-        uploadWriteError = err;
-      });
-      file.pipe(output);
-    });
-
-    busboy.on("error", () => {
-      reply(400, { error: "Malformed multipart form data" });
-    });
-
-    busboy.on("close", () => {
-      if (!filename || !audioUrl) {
-        reply(400, { error: "No file found in upload" });
-        return;
-      }
-      if (uploadLimitHit) {
-        reply(413, { error: "File too large (max 200MB)" });
-        return;
-      }
-      if (uploadWriteError) {
-        reply(500, { error: "Could not save uploaded file" });
+      if (!filename || fileContentBinary == null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "No file found in upload" }));
         return;
       }
 
-      loadEpisodes((cfgErr, episodes) => {
-        const list = cfgErr || !Array.isArray(episodes) ? [] : episodes.slice();
-        const date = fields.date || new Date().toISOString().slice(0, 10);
-        const title = fields.title || "Episode";
-        const description = fields.description || "";
-        const colorRaw = String(fields.color || "").toLowerCase();
-        const allowedColors = ["red", "orange", "yellow", "green", "blue", "indigo", "violet"];
-        const color = allowedColors.includes(colorRaw) ? colorRaw : "blue";
+      const fileBuffer = Buffer.from(fileContentBinary, "binary");
 
-        list.push({ date, title, description, audioUrl, color });
+      function pushEpisodeAndRespond(audioUrl) {
+        loadEpisodes((cfgErr, episodes) => {
+          const list = cfgErr || !Array.isArray(episodes) ? [] : episodes.slice();
+          const date = fields.date || new Date().toISOString().slice(0, 10);
+          const title = fields.title || "Episode";
+          const description = fields.description || "";
+          const colorRaw = String(fields.color || "").toLowerCase();
+          const allowedColors = ["red","orange","yellow","green","blue","indigo","violet"];
+          const color = allowedColors.includes(colorRaw) ? colorRaw : "blue";
 
-        saveEpisodes(list, (saveErr) => {
-          if (saveErr) {
-            reply(500, { error: "Could not update episodes" });
-            return;
-          }
-          reply(200, { filename, audioUrl });
+          list.push({ date, title, description, audioUrl, color });
+
+          saveEpisodes(list, (saveErr) => {
+            if (saveErr) {
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "Could not update episodes" }));
+              return;
+            }
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ filename, audioUrl }));
+          });
         });
+      }
+
+      if (cloudinary) {
+        uploadBufferCloudinary(
+          fileBuffer,
+          {
+            resource_type: "video",
+            folder: "avalon/episodes",
+            use_filename: true,
+            unique_filename: true,
+            filename_override: path.basename(filename)
+          },
+          (upErr, result) => {
+            if (upErr) {
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: upErr.message || "Cloud upload failed" }));
+              return;
+            }
+            pushEpisodeAndRespond(result.secure_url);
+          }
+        );
+        return;
+      }
+
+      const targetPath = path.join(uploadsDir, filename);
+      const audioUrl = "mp3/" + filename;
+
+      fs.writeFile(targetPath, fileContentBinary, "binary", (err) => {
+        if (err) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Could not save uploaded file" }));
+          return;
+        }
+        pushEpisodeAndRespond(audioUrl);
       });
     });
-
-    req.pipe(busboy);
     return;
   }
 
   if (requestPath === "/upload/month-image" && req.method === "POST") {
+    if (!checkAdminAuth(req, res)) return;
     const contentType = req.headers["content-type"] || "";
-    if (!contentType.toLowerCase().startsWith("multipart/form-data")) {
+    const boundaryMatch = contentType.match(/boundary=(.+)$/);
+    if (!boundaryMatch) {
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Expected multipart form upload" }));
+      res.end(JSON.stringify({ error: "Missing boundary" }));
       return;
     }
-    const busboy = Busboy({
-      headers: req.headers,
-      limits: { files: 1, fields: 5, fileSize: 25 * 1024 * 1024 }
-    });
-    const fields = {};
-    const tmpName = `upload-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`;
-    const tmpPath = path.join(imagesDir, tmpName);
-    let hasFile = false;
-    let uploadWriteError = null;
-    let uploadLimitHit = false;
-    let responded = false;
 
-    function reply(status, payload) {
-      if (responded) return;
-      responded = true;
-      res.writeHead(status, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(payload));
-    }
+    const boundary = boundaryMatch[1];
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      const buffer = Buffer.concat(chunks);
+      const bodyStr = buffer.toString("binary");
+      const parts = bodyStr.split("--" + boundary);
 
-    busboy.on("field", (name, value) => {
-      fields[name] = value;
-    });
+      let fileContentBinary = null;
+      let fields = {};
 
-    busboy.on("file", (name, file) => {
-      if (name !== "file") {
-        file.resume();
-        return;
+      for (const part of parts) {
+        if (!part.includes("Content-Disposition")) continue;
+        const [rawHeaders, rawBody] = part.split("\r\n\r\n");
+        if (!rawBody) continue;
+        const headers = rawHeaders.split("\r\n");
+        const dispo = headers.find((h) => h.toLowerCase().startsWith("content-disposition"));
+        if (!dispo) continue;
+
+        const nameMatch = dispo.match(/name="([^"]+)"/);
+        const fileMatch = dispo.match(/filename="([^"]*)"/);
+        const fieldName = nameMatch ? nameMatch[1] : null;
+
+        if (fileMatch && fieldName === "file") {
+          let fileSection = rawBody;
+          fileSection = fileSection.replace(/\r\n--$/, "");
+          fileContentBinary = fileSection;
+        } else if (fieldName) {
+          const value = rawBody.replace(/\r\n--$/, "").trim();
+          fields[fieldName] = value;
+        }
       }
-      hasFile = true;
-      const output = fs.createWriteStream(tmpPath);
-      file.on("limit", () => {
-        uploadLimitHit = true;
-        output.destroy();
-      });
-      file.on("error", (err) => {
-        uploadWriteError = err;
-      });
-      output.on("error", (err) => {
-        uploadWriteError = err;
-      });
-      file.pipe(output);
-    });
 
-    busboy.on("error", () => {
-      reply(400, { error: "Malformed multipart form data" });
-    });
-
-    busboy.on("close", () => {
-      if (!hasFile) {
-        reply(400, { error: "No file found in upload" });
-        return;
-      }
-      if (uploadLimitHit) {
-        fs.unlink(tmpPath, () => {});
-        reply(413, { error: "File too large (max 25MB)" });
-        return;
-      }
-      if (uploadWriteError) {
-        fs.unlink(tmpPath, () => {});
-        reply(500, { error: "Could not save month image" });
+      if (fileContentBinary == null) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "No file found in upload" }));
         return;
       }
 
       const monthKeyRaw = (fields.month || "").toLowerCase();
       const allowed = [
-        "january", "february", "march", "april", "may", "june",
-        "july", "august", "september", "october", "november", "december"
+        "january","february","march","april","may","june",
+        "july","august","september","october","november","december"
       ];
       if (!allowed.includes(monthKeyRaw)) {
-        fs.unlink(tmpPath, () => {});
-        reply(400, { error: "Invalid month" });
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid month" }));
         return;
       }
 
       const yearStr = (fields.year || "").trim();
       const yearNum = Number(yearStr);
       if (!yearStr || !Number.isInteger(yearNum) || yearNum < 1900 || yearNum > 3000) {
-        fs.unlink(tmpPath, () => {});
-        reply(400, { error: "Invalid year" });
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid year" }));
         return;
       }
 
       const targetName = `month-${yearNum}-${monthKeyRaw}.jpg`;
       const targetPath = path.join(imagesDir, targetName);
-      fs.rename(tmpPath, targetPath, (err) => {
+      const mapKey = monthMapKey(yearNum, monthKeyRaw);
+      const fileBuffer = Buffer.from(fileContentBinary, "binary");
+
+      function respondOk(extra) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            month: monthKeyRaw,
+            year: yearNum,
+            filename: targetName,
+            ...(extra || {})
+          })
+        );
+      }
+
+      if (cloudinary) {
+        const publicId = `month-${yearNum}-${monthKeyRaw}`;
+        uploadBufferCloudinary(
+          fileBuffer,
+          {
+            resource_type: "image",
+            folder: "avalon/months",
+            public_id: publicId,
+            overwrite: true
+          },
+          (upErr, result) => {
+            if (upErr) {
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: upErr.message || "Cloud upload failed" }));
+              return;
+            }
+            loadMonthImagesMap((mapErr, map) => {
+              const next = mapErr || !map || typeof map !== "object" ? {} : { ...map };
+              next[mapKey] = {
+                url: result.secure_url,
+                publicId: result.public_id || publicId
+              };
+              saveMonthImagesMap(next, (saveErr) => {
+                if (saveErr) {
+                  res.writeHead(500, { "Content-Type": "application/json" });
+                  res.end(JSON.stringify({ error: "Could not save month image map" }));
+                  return;
+                }
+                respondOk({ imageUrl: result.secure_url });
+              });
+            });
+          }
+        );
+        return;
+      }
+
+      fs.writeFile(targetPath, fileContentBinary, "binary", (err) => {
         if (err) {
-          fs.unlink(tmpPath, () => {});
-          reply(500, { error: "Could not save month image" });
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Could not save month image" }));
           return;
         }
-        reply(200, { month: monthKeyRaw, year: yearNum, filename: targetName });
+        respondOk();
       });
     });
-
-    req.pipe(busboy);
     return;
   }
 
   if (requestPath === "/api/delete-month-image" && req.method === "POST") {
+    if (!checkAdminAuth(req, res)) return;
     let body = "";
     req.on("data", (chunk) => {
       body += chunk;
@@ -442,26 +711,74 @@ const server = http.createServer((req, res) => {
         }
         const targetName = `month-${yearNum}-${monthKeyRaw}.jpg`;
         const targetPath = path.join(imagesDir, targetName);
-        const resolved = path.resolve(targetPath);
-        const resolvedImages = path.resolve(imagesDir);
-        if (!resolved.startsWith(resolvedImages + path.sep)) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Invalid path" }));
-          return;
-        }
-        fs.unlink(resolved, (err) => {
-          if (err) {
-            if (err.code === "ENOENT") {
-              res.writeHead(200, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ ok: true, deleted: false }));
-              return;
-            }
-            res.writeHead(500, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Could not delete month image" }));
+        const mapKey = monthMapKey(yearNum, monthKeyRaw);
+
+        function removeLocalFile(done) {
+          const resolved = path.resolve(targetPath);
+          const resolvedImages = path.resolve(imagesDir);
+          if (!resolved.startsWith(resolvedImages + path.sep)) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Invalid path" }));
             return;
           }
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: true, deleted: true }));
+          fs.unlink(resolved, (err) => {
+            if (err) {
+              if (err.code === "ENOENT") return done(null, false);
+              return done(err);
+            }
+            done(null, true);
+          });
+        }
+
+        loadMonthImagesMap((mapErr, map) => {
+          const safeMap = mapErr || !map || typeof map !== "object" ? {} : map;
+          const entry = safeMap[mapKey];
+          const cloudEntry = entry && typeof entry === "object" && entry.publicId;
+
+          if (cloudinary && cloudEntry) {
+            cloudinary.uploader.destroy(entry.publicId, { resource_type: "image" }, (destroyErr) => {
+              if (destroyErr) {
+                res.writeHead(500, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: destroyErr.message || "Could not delete cloud image" }));
+                return;
+              }
+              delete safeMap[mapKey];
+              saveMonthImagesMap(safeMap, (saveErr) => {
+                if (saveErr) {
+                  res.writeHead(500, { "Content-Type": "application/json" });
+                  res.end(JSON.stringify({ error: "Could not update month image map" }));
+                  return;
+                }
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ ok: true, deleted: true }));
+              });
+            });
+            return;
+          }
+
+          if (cloudinary && entry && typeof entry === "object" && entry.url && !entry.publicId) {
+            delete safeMap[mapKey];
+            saveMonthImagesMap(safeMap, (saveErr) => {
+              if (saveErr) {
+                res.writeHead(500, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: "Could not update month image map" }));
+                return;
+              }
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ ok: true, deleted: true }));
+            });
+            return;
+          }
+
+          removeLocalFile((unlinkErr, deleted) => {
+            if (unlinkErr) {
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "Could not delete month image" }));
+              return;
+            }
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true, deleted }));
+          });
         });
       } catch (e) {
         res.writeHead(400, { "Content-Type": "application/json" });

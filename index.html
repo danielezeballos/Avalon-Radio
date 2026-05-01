@@ -554,7 +554,7 @@
 
   <div class="layout">
     <div class="month-image">
-      <img id="monthImage" src="" alt="" />
+      <img id="monthImage" src="" alt="" decoding="async" fetchpriority="high" />
     </div>
 
     <div class="calendar">
@@ -630,6 +630,9 @@
     const liveLogoSrc = "avaloncaferadiologo2.png";
 
     let monthImageUrls = {};
+    const resolvedMonthImageSrcByKey = {};
+    const imageExistsCache = {};
+    let monthImageRenderToken = 0;
 
     const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
     const monthKeys = ["january","february","march","april","may","june","july","august","september","october","november","december"];
@@ -793,51 +796,105 @@
       }
     }
 
-    function renderMonthImage(){
+    function preloadImageExists(src){
+      if (!src) return Promise.resolve(false);
+      if (Object.prototype.hasOwnProperty.call(imageExistsCache, src)) {
+        return Promise.resolve(imageExistsCache[src]);
+      }
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.decoding = "async";
+        img.onload = () => {
+          imageExistsCache[src] = true;
+          resolve(true);
+        };
+        img.onerror = () => {
+          imageExistsCache[src] = false;
+          resolve(false);
+        };
+        img.src = src;
+      });
+    }
+
+    async function resolveMonthImageSrc(yearNum, monthKey){
+      const mapKey = `${yearNum}-${monthKey}`;
+      if (resolvedMonthImageSrcByKey[mapKey] !== undefined) {
+        return resolvedMonthImageSrcByKey[mapKey];
+      }
+
+      const cloudUrl = monthImageUrls[mapKey];
+      if (cloudUrl) {
+        resolvedMonthImageSrcByKey[mapKey] = cloudUrl;
+        return cloudUrl;
+      }
+
+      const yearSpecific = `images/month-${yearNum}-${monthKey}.jpg`;
+      const generic = `images/month-${monthKey}.jpg`;
+
+      if (await preloadImageExists(yearSpecific)) {
+        resolvedMonthImageSrcByKey[mapKey] = yearSpecific;
+        return yearSpecific;
+      }
+      if (await preloadImageExists(generic)) {
+        resolvedMonthImageSrcByKey[mapKey] = generic;
+        return generic;
+      }
+
+      resolvedMonthImageSrcByKey[mapKey] = null;
+      return null;
+    }
+
+    function preloadNeighborMonthImages(){
+      const neighbors = [
+        { y: currentYear, m: currentMonth - 1 },
+        { y: currentYear, m: currentMonth + 1 }
+      ].map(({ y, m }) => {
+        if (m < 0) return { y: y - 1, m: 11 };
+        if (m > 11) return { y: y + 1, m: 0 };
+        return { y, m };
+      });
+
+      neighbors.forEach(({ y, m }) => {
+        const key = monthKeys[m];
+        if (!key) return;
+        resolveMonthImageSrc(y, key).catch(() => {});
+      });
+    }
+
+    async function renderMonthImage(){
       const key = monthKeys[currentMonth];
       if (!key){
         monthImage.style.visibility = "hidden";
         monthImage.removeAttribute("src");
         return;
       }
-
-      // Bust browser cache so removed/replaced month images update immediately after admin changes.
-      const cacheBust = Date.now();
-      const mapKey = `${currentYear}-${key}`;
-      const cloudUrl = monthImageUrls[mapKey];
-      if (cloudUrl) {
-        const sep = cloudUrl.includes("?") ? "&" : "?";
-        monthImage.onload = () => {
-          monthImage.style.visibility = "visible";
-        };
-        monthImage.onerror = () => {
-          monthImage.style.visibility = "hidden";
-          monthImage.removeAttribute("src");
-        };
-        monthImage.src = `${cloudUrl}${sep}t=${cacheBust}`;
-        return;
-      }
-
-      const yearSpecific = `images/month-${currentYear}-${key}.jpg?t=${cacheBust}`;
-      const generic = `images/month-${key}.jpg?t=${cacheBust}`;
-
-      let triedFallback = false;
+      const renderToken = ++monthImageRenderToken;
+      const src = await resolveMonthImageSrc(currentYear, key).catch(() => null);
+      if (renderToken !== monthImageRenderToken) return;
 
       monthImage.onload = () => {
+        if (renderToken !== monthImageRenderToken) return;
         monthImage.style.visibility = "visible";
       };
-
       monthImage.onerror = () => {
-        if (!triedFallback){
-          triedFallback = true;
-          monthImage.src = generic;
-          return;
-        }
+        if (renderToken !== monthImageRenderToken) return;
         monthImage.style.visibility = "hidden";
         monthImage.removeAttribute("src");
       };
 
-      monthImage.src = yearSpecific;
+      if (!src) {
+        monthImage.style.visibility = "hidden";
+        monthImage.removeAttribute("src");
+        return;
+      }
+
+      if (monthImage.src !== src) {
+        monthImage.style.visibility = "hidden";
+        monthImage.src = src;
+      } else {
+        monthImage.style.visibility = "visible";
+      }
+      preloadNeighborMonthImages();
     }
 
     const soundBar = document.getElementById("soundBar");
