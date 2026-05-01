@@ -3,6 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="preconnect" href="https://res.cloudinary.com" crossorigin />
+  <link rel="dns-prefetch" href="//res.cloudinary.com" />
   <link rel="icon" type="image/svg+xml" href="favicon.svg" />
   <title>Avalon Radio – Calendar</title>
   <style>
@@ -816,6 +818,18 @@
       });
     }
 
+    function optimizeCloudinaryImageUrl(url){
+      const input = String(url || "");
+      if (!input || !input.includes("res.cloudinary.com")) return input;
+      const marker = "/upload/";
+      const idx = input.indexOf(marker);
+      if (idx === -1) return input;
+      const transform = "f_auto,q_auto,w_1400,c_limit,dpr_auto";
+      const existing = input.slice(idx + marker.length);
+      if (existing.startsWith(transform + "/")) return input;
+      return `${input.slice(0, idx + marker.length)}${transform}/${existing}`;
+    }
+
     async function resolveMonthImageSrc(yearNum, monthKey){
       const mapKey = `${yearNum}-${monthKey}`;
       if (resolvedMonthImageSrcByKey[mapKey] !== undefined) {
@@ -824,8 +838,9 @@
 
       const cloudUrl = monthImageUrls[mapKey];
       if (cloudUrl) {
-        resolvedMonthImageSrcByKey[mapKey] = cloudUrl;
-        return cloudUrl;
+        const optimizedUrl = optimizeCloudinaryImageUrl(cloudUrl);
+        resolvedMonthImageSrcByKey[mapKey] = optimizedUrl;
+        return optimizedUrl;
       }
 
       const yearSpecific = `images/month-${yearNum}-${monthKey}.jpg`;

@@ -130,6 +130,22 @@ function monthMapKey(yearNum, monthKeyRaw) {
   return `${yearNum}-${monthKeyRaw}`;
 }
 
+function removeLocalFileAt(targetPath, baseDir, callback) {
+  const resolved = path.resolve(targetPath);
+  const resolvedBase = path.resolve(baseDir);
+  if (!(resolved === resolvedBase || resolved.startsWith(resolvedBase + path.sep))) {
+    callback(new Error("Invalid path"));
+    return;
+  }
+  fs.unlink(resolved, (err) => {
+    if (err) {
+      if (err.code === "ENOENT") return callback(null, false);
+      return callback(err);
+    }
+    callback(null, true);
+  });
+}
+
 function uploadBufferCloudinary(buffer, options, callback) {
   const stream = cloudinary.uploader.upload_stream(options, (err, result) => {
     if (err) return callback(err);
@@ -704,38 +720,25 @@ const server = http.createServer((req, res) => {
         }
         const yearStr = String(parsed.year ?? "").trim();
         const yearNum = Number(yearStr);
-        if (!yearStr || !Number.isInteger(yearNum) || yearNum < 1900 || yearNum > 3000) {
+        const deleteDefault = !yearStr || parsed.defaultImage === true;
+        if (!deleteDefault && (!Number.isInteger(yearNum) || yearNum < 1900 || yearNum > 3000)) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "Invalid year" }));
           return;
         }
-        const targetName = `month-${yearNum}-${monthKeyRaw}.jpg`;
+        const targetName = deleteDefault
+          ? `month-${monthKeyRaw}.jpg`
+          : `month-${yearNum}-${monthKeyRaw}.jpg`;
         const targetPath = path.join(imagesDir, targetName);
-        const mapKey = monthMapKey(yearNum, monthKeyRaw);
-
-        function removeLocalFile(done) {
-          const resolved = path.resolve(targetPath);
-          const resolvedImages = path.resolve(imagesDir);
-          if (!resolved.startsWith(resolvedImages + path.sep)) {
-            res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Invalid path" }));
-            return;
-          }
-          fs.unlink(resolved, (err) => {
-            if (err) {
-              if (err.code === "ENOENT") return done(null, false);
-              return done(err);
-            }
-            done(null, true);
-          });
-        }
+        const mapKey = deleteDefault ? null : monthMapKey(yearNum, monthKeyRaw);
 
         loadMonthImagesMap((mapErr, map) => {
           const safeMap = mapErr || !map || typeof map !== "object" ? {} : map;
-          const entry = safeMap[mapKey];
+          const entry = mapKey ? safeMap[mapKey] : null;
           const cloudEntry = entry && typeof entry === "object" && entry.publicId;
+          const defaultCloudPublicId = `month-${monthKeyRaw}`;
 
-          if (cloudinary && cloudEntry) {
+          if (cloudinary && cloudEntry && mapKey) {
             cloudinary.uploader.destroy(entry.publicId, { resource_type: "image" }, (destroyErr) => {
               if (destroyErr) {
                 res.writeHead(500, { "Content-Type": "application/json" });
@@ -756,7 +759,7 @@ const server = http.createServer((req, res) => {
             return;
           }
 
-          if (cloudinary && entry && typeof entry === "object" && entry.url && !entry.publicId) {
+          if (cloudinary && entry && typeof entry === "object" && entry.url && !entry.publicId && mapKey) {
             delete safeMap[mapKey];
             saveMonthImagesMap(safeMap, (saveErr) => {
               if (saveErr) {
@@ -770,15 +773,27 @@ const server = http.createServer((req, res) => {
             return;
           }
 
-          removeLocalFile((unlinkErr, deleted) => {
-            if (unlinkErr) {
-              res.writeHead(500, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "Could not delete month image" }));
-              return;
-            }
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ ok: true, deleted }));
-          });
+          function finishLocalDelete() {
+            removeLocalFileAt(targetPath, imagesDir, (unlinkErr, deleted) => {
+              if (unlinkErr) {
+                res.writeHead(500, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: "Could not delete month image" }));
+                return;
+              }
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ ok: true, deleted }));
+            });
+          }
+
+          if (cloudinary && deleteDefault) {
+            // Legacy default images may exist in Cloudinary under month-[name].
+            cloudinary.uploader.destroy(defaultCloudPublicId, { resource_type: "image" }, () => {
+              finishLocalDelete();
+            });
+            return;
+          }
+
+          finishLocalDelete();
         });
       } catch (e) {
         res.writeHead(400, { "Content-Type": "application/json" });
